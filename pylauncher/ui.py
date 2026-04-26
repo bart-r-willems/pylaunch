@@ -166,11 +166,9 @@ class App(tk.Tk):
         self.settings = Settings()
         self._envs: list[Environment] = []
 
-        # Try a slightly nicer default theme where available.
-        try:
-            ttk.Style(self).theme_use("clam")
-        except tk.TclError:
-            pass
+        # Use the platform's native ttk theme (no "clam" override) so that
+        # ttk widgets and tk widgets blend together visually.
+        self._set_window_icon()
 
         self._build()
 
@@ -253,17 +251,68 @@ class App(tk.Tk):
         self.minsize(640, 320)
 
     def _make_list(self, label: str, column: int) -> tk.Listbox:
-        frame = ttk.LabelFrame(self, text=label, padding=PADDING)
+        # Plain frame (no LabelFrame) so there's no border around the list.
+        # The heading is a regular label sitting above the listbox.
+        frame = ttk.Frame(self, padding=PADDING)
         frame.grid(row=1, column=column, sticky="nsew", padx=PADDING, pady=PADDING)
         frame.columnconfigure(0, weight=1)
-        frame.rowconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
 
-        lb = tk.Listbox(frame, exportselection=False, activestyle="dotbox")
-        lb.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(frame, text=label).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 2))
+
+        # Flat 1px black border to match the look of ttk.Entry boxes.
+        lb = tk.Listbox(
+            frame,
+            exportselection=False,
+            activestyle="dotbox",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="black",
+            highlightcolor="black",
+        )
+        lb.grid(row=1, column=0, sticky="nsew")
         sb = ttk.Scrollbar(frame, orient="vertical", command=lb.yview)
         lb.configure(yscrollcommand=sb.set)
-        sb.grid(row=0, column=1, sticky="ns")
+        sb.grid(row=1, column=1, sticky="ns")
         return lb
+
+    # ----- Window icon -----
+
+    def _set_window_icon(self) -> None:
+        """Use python_launcher.ico as the window/taskbar icon if present.
+
+        Looks next to the package and next to the launcher script. On Windows
+        we also set an explicit AppUserModelID so the taskbar groups the
+        window under our icon instead of the generic Python one.
+        """
+        from pathlib import Path
+        import sys
+
+        candidates = [
+            Path(__file__).parent / "python_launcher.ico",
+            Path(__file__).parent.parent / "python_launcher.ico",
+            Path.cwd() / "python_launcher.ico",
+        ]
+        ico = next((p for p in candidates if p.is_file()), None)
+        if ico is None:
+            return
+
+        # Tell Windows this is its own app, otherwise the taskbar shows the
+        # python.exe icon regardless of what we set on the window.
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                    "pylauncher.app"
+                )
+            except (AttributeError, OSError):
+                pass
+
+        try:
+            self.iconbitmap(default=str(ico))
+        except tk.TclError:
+            pass
 
     # ----- Refresh / state -----
 

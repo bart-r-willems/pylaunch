@@ -23,6 +23,7 @@ KNOWN_APPS: dict[str, str] = {
     "IDLE": "idle",
     "Jupyter Lab": "jupyter-lab",
     "Jupyter Notebook": "jupyter-notebook",
+    "Qt Console": "jupyter-qtconsole",
     "Marimo": "marimo",
     "IPython": "ipython",
 }
@@ -127,6 +128,7 @@ def app_command(env: Environment, app_display_name: str) -> list[str]:
     module_map = {
         "Jupyter Lab": "jupyterlab",
         "Jupyter Notebook": "notebook",
+        "Qt Console": "qtconsole",
         "Marimo": "marimo",
         "IPython": "IPython",
     }
