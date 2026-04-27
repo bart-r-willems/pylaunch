@@ -458,8 +458,24 @@ class App(tk.Tk):
             return
 
         argv = app_command(env, app)
+
+        # For Command Prompt, "activate" the venv by prepending Scripts to
+        # PATH and setting VIRTUAL_ENV. This is exactly what activate.bat
+        # does, minus the prompt-string fiddling.
+        env_overrides: dict[str, str] | None = None
+        if app == "Command Prompt":
+            import os
+            current_path = os.environ.get("PATH", "")
+            env_overrides = {
+                "PATH": f"{env.bin_dir}{os.pathsep}{current_path}",
+                "VIRTUAL_ENV": str(env.path),
+            }
+            # PYTHONHOME interferes with venvs — clear it if set.
+            if "PYTHONHOME" in os.environ:
+                env_overrides["PYTHONHOME"] = ""
+
         try:
-            launch(argv, d["path"])
+            launch(argv, d["path"], env_overrides=env_overrides)
         except OSError as e:
             messagebox.showerror("Launch failed", str(e), parent=self)
             return

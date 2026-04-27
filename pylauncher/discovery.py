@@ -26,6 +26,9 @@ KNOWN_APPS: dict[str, str] = {
     "Qt Console": "jupyter-qtconsole",
     "Marimo": "marimo",
     "IPython": "ipython",
+    # Special: not a Python package, just a shell with the env on PATH.
+    # Windows only; filtered out elsewhere on other platforms.
+    "Command Prompt": "__cmd__",
 }
 
 
@@ -100,6 +103,11 @@ def available_apps(env: Environment) -> list[str]:
             # Just trust it exists if python does.
             found.append(display_name)
             continue
+        if exe_base == "__cmd__":
+            # cmd.exe ships with Windows; not a thing on Unix.
+            if IS_WINDOWS:
+                found.append(display_name)
+            continue
         candidate = env.bin_dir / f"{exe_base}{EXE_SUFFIX}"
         # On Windows, console scripts may also exist as .exe; check both.
         if candidate.is_file():
@@ -118,6 +126,12 @@ def app_command(env: Environment, app_display_name: str) -> list[str]:
     if app_display_name == "IDLE":
         # IDLE as a module is the most reliable way across platforms.
         return [py, "-m", "idlelib"]
+    if app_display_name == "Command Prompt":
+        # Just launch cmd. The launcher prepends the env's Scripts dir to
+        # PATH and sets VIRTUAL_ENV, so `python`, `pip`, etc. resolve to
+        # the env without the user having to call activate.bat.
+        import os
+        return [os.environ.get("COMSPEC", "cmd.exe")]
     # For installed scripts, prefer running the executable directly so that
     # the env's own python is used and the script's shebang/launcher works.
     exe_base = KNOWN_APPS[app_display_name]

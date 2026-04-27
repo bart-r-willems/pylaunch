@@ -7,17 +7,28 @@ import sys
 from pathlib import Path
 
 
-def launch(argv: list[str], cwd: str | Path) -> None:
+def launch(
+    argv: list[str],
+    cwd: str | Path,
+    env_overrides: dict[str, str] | None = None,
+) -> None:
     """Start argv with the given working directory, fully detached.
 
     The child process keeps running after the launcher exits.
+
+    env_overrides, if given, is merged on top of the current process
+    environment for the child only — used to "activate" a venv inside a
+    Command Prompt by prepending Scripts to PATH and setting VIRTUAL_ENV.
     """
     cwd_str = str(cwd)
     kwargs: dict = {"cwd": cwd_str, "close_fds": True}
 
+    if env_overrides:
+        child_env = os.environ.copy()
+        child_env.update(env_overrides)
+        kwargs["env"] = child_env
+
     if sys.platform == "win32":
-        # CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS
-        DETACHED_PROCESS = 0x00000008
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         CREATE_NEW_CONSOLE = 0x00000010
 
