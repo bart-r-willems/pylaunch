@@ -217,29 +217,33 @@ class App(tk.Tk):
         self.dir_list.bind("<Double-Button-1>", lambda _e: self._launch())
         self.app_list.bind("<Double-Button-1>", lambda _e: self._launch())
 
-        # Bottom bar: sort toggle, edit dirs, launch.
-        bottom = ttk.Frame(self, padding=PADDING)
-        bottom.grid(row=2, column=0, columnspan=3, sticky="ew")
-        bottom.columnconfigure(2, weight=1)
-
-        ttk.Label(bottom, text="Sort dirs by:").grid(row=0, column=0)
+        # Bottom controls: one frame per column so each control aligns with
+        # the list above it. Padding matches the lists' padx/pady so the
+        # left and right edges line up exactly.
+        bottom_left = ttk.Frame(self)
+        bottom_left.grid(row=2, column=0, sticky="ew", padx=PADDING, pady=PADDING)
+        ttk.Label(bottom_left, text="Sort dirs by:").pack(side="left")
         self.sort_var = tk.StringVar(value=self.settings.get("sort_directories_by", "alias"))
         sort_combo = ttk.Combobox(
-            bottom,
+            bottom_left,
             textvariable=self.sort_var,
             values=["alias", "uses"],
             state="readonly",
             width=8,
         )
-        sort_combo.grid(row=0, column=1, padx=(PADDING, 0))
+        sort_combo.pack(side="left", padx=(PADDING, 0))
         sort_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_sort_change())
 
-        ttk.Button(bottom, text="Edit Directories…", command=self._open_dir_editor).grid(
-            row=0, column=2, padx=PADDING
+        bottom_mid = ttk.Frame(self)
+        bottom_mid.grid(row=2, column=1, sticky="ew", padx=PADDING, pady=PADDING)
+        ttk.Button(bottom_mid, text="Edit Directories…", command=self._open_dir_editor).pack(
+            side="left"
         )
 
-        self.launch_btn = ttk.Button(bottom, text="Launch", command=self._launch)
-        self.launch_btn.grid(row=0, column=3, sticky="e")
+        bottom_right = ttk.Frame(self)
+        bottom_right.grid(row=2, column=2, sticky="ew", padx=PADDING, pady=PADDING)
+        self.launch_btn = ttk.Button(bottom_right, text="Launch", command=self._launch)
+        self.launch_btn.pack(side="right")
 
         # Status bar.
         self.status_var = tk.StringVar(value="")
