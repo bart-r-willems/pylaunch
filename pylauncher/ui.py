@@ -6,6 +6,9 @@ Layout:
 """
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
@@ -464,7 +467,6 @@ class App(tk.Tk):
         # does, minus the prompt-string fiddling.
         env_overrides: dict[str, str] | None = None
         if app == "Command Prompt":
-            import os
             current_path = os.environ.get("PATH", "")
             env_overrides = {
                 "PATH": f"{env.bin_dir}{os.pathsep}{current_path}",
@@ -474,8 +476,32 @@ class App(tk.Tk):
             if "PYTHONHOME" in os.environ:
                 env_overrides["PYTHONHOME"] = ""
 
+        # Console window title showing which env we're in.
+        # Console window title showing which env / app this is. We set it
+        # via `cmd /k "title <name> && <real exe>"` because every console-mode
+        # exe on Windows (cmd, python, ipython, jupyter-lab, marimo, etc.)
+        # calls SetConsoleTitle early on and would clobber STARTUPINFO.lpTitle.
+        # `title` is a cmd builtin that runs *after* the child, so it wins.
+        # IDLE is a Tk GUI app with no console, so it's skipped.
+        title = f"{env.name} / {app}"
+        console_title: str | None = None
+        if sys.platform == "win32" and app != "IDLE":
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            if app == "Command Prompt":
+                # The "real" command IS cmd — just set the title.
+                cmdline = f"title {title}"
+            else:
+                inner = subprocess.list2cmdline(argv)
+                cmdline = f"title {title} && {inner}"
+            argv = [comspec, "/k", cmdline]
+
         try:
-            launch(argv, d["path"], env_overrides=env_overrides)
+            launch(
+                argv,
+                d["path"],
+                env_overrides=env_overrides,
+                console_title=console_title,
+            )
         except OSError as e:
             messagebox.showerror("Launch failed", str(e), parent=self)
             return
