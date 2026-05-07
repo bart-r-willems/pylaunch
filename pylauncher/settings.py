@@ -36,6 +36,11 @@ DEFAULTS: dict[str, Any] = {
     "last_env": "",
     "last_dir_alias": "",
     "last_app": "",
+    # Per-env audit records, keyed by env name:
+    #   {"last_run": ISO-8601 str | null, "status": "clean"|"vulnerable"|null}
+    "audits": {},
+    # How many days before an env is flagged as overdue for audit.
+    "audit_warn_days": 30,
 }
 
 
@@ -123,3 +128,38 @@ class Settings:
         else:
             dirs.sort(key=lambda d: d["alias"].lower())
         return dirs
+
+    # ----- Audit tracking -----
+
+    def get_audit(self, env_name: str) -> dict:
+        """Return the audit record for env_name, creating an empty one."""
+        audits = self.data.setdefault("audits", {})
+        return audits.setdefault(env_name, {"last_run": None, "status": None})
+
+    def set_audit(self, env_name: str, status: str, when_iso: str) -> None:
+        """Record an audit completion for env_name."""
+        audits = self.data.setdefault("audits", {})
+        audits[env_name] = {"last_run": when_iso, "status": status}
+
+    def audit_age_days(self, env_name: str) -> int | None:
+        """Days since last audit, or None if never audited."""
+        from datetime import datetime
+        rec = self.get_audit(env_name)
+        if not rec.get("last_run"):
+            return None
+        try:
+            last = datetime.fromisoformat(rec["last_run"])
+        except ValueError:
+            return None
+        delta = datetime.now() - last
+        return max(0, delta.days)
+
+    def audit_state(self, env_name: str) -> str:
+        """Return 'never', 'overdue', 'vulnerable', or 'clean' for UI colouring."""
+        rec = self.get_audit(env_name)
+        age = self.audit_age_days(env_name)
+        if age is None:
+            return "never"
+        if age > int(self.data.get("audit_warn_days", 30)):
+            return "overdue"
+        return rec.get("status") or "never"

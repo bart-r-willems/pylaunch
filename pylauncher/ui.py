@@ -6,6 +6,7 @@ Layout:
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -13,8 +14,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from pathlib import Path
 
-from .settings import Settings
-from .discovery import discover_environments, available_apps, app_command, Environment
+from .settings import Settings, CONFIG_DIR
+from .discovery import discover_environments, available_apps, app_command, has_pip_audit, Environment
 from .launcher import launch
 
 
@@ -225,10 +226,17 @@ class App(tk.Tk):
         # left and right edges line up exactly.
         bottom_left = ttk.Frame(self)
         bottom_left.grid(row=2, column=0, sticky="ew", padx=PADDING, pady=PADDING)
-        ttk.Label(bottom_left, text="Sort dirs by:").pack(side="left")
+        self.audit_btn = ttk.Button(
+            bottom_left, text="Run pip-audit", command=self._run_audit
+        )
+        self.audit_btn.pack(side="left")
+
+        bottom_mid = ttk.Frame(self)
+        bottom_mid.grid(row=2, column=1, sticky="ew", padx=PADDING, pady=PADDING)
+        ttk.Label(bottom_mid, text="Sort:").pack(side="left")
         self.sort_var = tk.StringVar(value=self.settings.get("sort_directories_by", "alias"))
         sort_combo = ttk.Combobox(
-            bottom_left,
+            bottom_mid,
             textvariable=self.sort_var,
             values=["alias", "uses"],
             state="readonly",
@@ -236,11 +244,8 @@ class App(tk.Tk):
         )
         sort_combo.pack(side="left", padx=(PADDING, 0))
         sort_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_sort_change())
-
-        bottom_mid = ttk.Frame(self)
-        bottom_mid.grid(row=2, column=1, sticky="ew", padx=PADDING, pady=PADDING)
         ttk.Button(bottom_mid, text="Edit Directories…", command=self._open_dir_editor).pack(
-            side="left"
+            side="left", padx=(PADDING, 0)
         )
 
         bottom_right = ttk.Frame(self)
@@ -345,14 +350,30 @@ class App(tk.Tk):
         self.settings.save()
         self.refresh_environments()
 
+    # Map audit state to a foreground colour for the env list.
+    _AUDIT_COLOURS = {
+        "clean":      "#197a2b",   # green
+        "vulnerable": "#b8860b",   # dark orange / amber
+        "overdue":    "#c0392b",   # red
+        "never":      "#c0392b",   # red — never audited counts as overdue
+    }
+
     def refresh_environments(self) -> None:
+        # Before listing envs, ingest any audit markers written by completed
+        # pip-audit runs since the last refresh.
+        self._ingest_audit_markers()
+
         root = self.env_root_var.get().strip()
         self.settings.set("env_root", root)
         self.settings.save()
         self._envs = discover_environments(root)
         self.env_list.delete(0, "end")
-        for env in self._envs:
+        for i, env in enumerate(self._envs):
             self.env_list.insert("end", env.name)
+            state = self.settings.audit_state(env.name)
+            colour = self._AUDIT_COLOURS.get(state)
+            if colour:
+                self.env_list.itemconfig(i, foreground=colour)
 
         last_env = self.settings.get("last_env", "")
         idx = next((i for i, e in enumerate(self._envs) if e.name == last_env), 0)
@@ -368,8 +389,6 @@ class App(tk.Tk):
             self.status_var.set(
                 f"No environments found in '{root}'." if root else "Set an env root to begin."
             )
-        else:
-            self.status_var.set(f"{len(self._envs)} environment(s) found.")
 
     def refresh_directories(self) -> None:
         last_alias = self.settings.get("last_dir_alias", "")
@@ -387,6 +406,7 @@ class App(tk.Tk):
         env = self._current_env()
         self.app_list.delete(0, "end")
         if env is None:
+            self.audit_btn.state(["disabled"])
             return
         apps = available_apps(env)
         for a in apps:
@@ -397,6 +417,46 @@ class App(tk.Tk):
             self.app_list.selection_clear(0, "end")
             self.app_list.selection_set(idx)
         self._save_last()
+        self._update_audit_status(env)
+
+    def _update_audit_status(self, env: Environment) -> None:
+        """Update status bar + audit button based on the env's audit record."""
+        # Button enabled only when pip-audit is installed in this env.
+        if has_pip_audit(env):
+            self.audit_btn.state(["!disabled"])
+        else:
+            self.audit_btn.state(["disabled"])
+
+        rec = self.settings.get_audit(env.name)
+        age = self.settings.audit_age_days(env.name)
+        warn_days = int(self.settings.get("audit_warn_days", 30))
+
+        if not has_pip_audit(env):
+            self.status_var.set(
+                f"{env.name}: pip-audit not installed in this env."
+            )
+            return
+        if age is None:
+            self.status_var.set(
+                f"{env.name}: never audited — run pip-audit to check for vulnerabilities."
+            )
+            return
+        status = rec.get("status") or "?"
+        last = rec.get("last_run", "")
+        # Trim seconds for nicer display.
+        last_short = last[:16].replace("T", " ") if last else "?"
+        if age > warn_days:
+            self.status_var.set(
+                f"{env.name}: last audit {age} days ago ({last_short}) — overdue."
+            )
+        elif status == "vulnerable":
+            self.status_var.set(
+                f"{env.name}: vulnerabilities found {age} days ago ({last_short}). Re-audit after fixing."
+            )
+        else:
+            self.status_var.set(
+                f"{env.name}: clean as of {age} day(s) ago ({last_short})."
+            )
 
     def _on_sort_change(self) -> None:
         self.settings.set("sort_directories_by", self.sort_var.get())
@@ -509,6 +569,130 @@ class App(tk.Tk):
         self.settings.bump_directory_use(d["alias"])
         self._save_last()
         self.destroy()
+
+    # ----- pip-audit -----
+
+    @property
+    def _markers_dir(self) -> Path:
+        return CONFIG_DIR / "audit_markers"
+
+    def _run_audit(self) -> None:
+        """Launch pip-audit in a new console for the selected env.
+
+        We invoke the bundled audit_wrapper module via the env's own python so
+        pip-audit runs against the right packages. The wrapper writes a marker
+        file on completion which we ingest the next time refresh_environments
+        runs (or when the launcher is reopened).
+        """
+        env = self._current_env()
+        if env is None:
+            return
+        if not has_pip_audit(env):
+            messagebox.showinfo(
+                "pip-audit not installed",
+                f"pip-audit is not installed in '{env.name}'.\n\n"
+                "Install it from a Command Prompt in that env:\n    pip install pip-audit",
+                parent=self,
+            )
+            return
+
+        pip_audit_exe = env.bin_dir / f"pip-audit{'.exe' if sys.platform == 'win32' else ''}"
+        markers = self._markers_dir
+        markers.mkdir(parents=True, exist_ok=True)
+
+        # Build argv to invoke our wrapper module via the env's python.
+        # Working dir is the env path itself — pip-audit doesn't care.
+        argv = [
+            str(env.python_exe),
+            "-m", "pylauncher.audit_wrapper",
+            env.name,
+            str(markers),
+            str(pip_audit_exe),
+        ]
+
+        # The wrapper's working dir doesn't really matter; pick the env path.
+        cwd = str(env.path)
+
+        # Same env activation as Command Prompt so pip-audit and any follow-up
+        # commands the user runs (pip-audit --fix, pip list, etc.) resolve to
+        # the env's tools.
+        env_overrides = {
+            "PATH": f"{env.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "VIRTUAL_ENV": str(env.path),
+        }
+        if "PYTHONHOME" in os.environ:
+            env_overrides["PYTHONHOME"] = ""
+
+        # PYTHONPATH must include this package so `python -m pylauncher.audit_wrapper`
+        # works regardless of which env's python is running it.
+        package_root = str(Path(__file__).parent.parent.resolve())
+        existing_pp = os.environ.get("PYTHONPATH", "")
+        env_overrides["PYTHONPATH"] = (
+            f"{package_root}{os.pathsep}{existing_pp}" if existing_pp else package_root
+        )
+
+        # Title the console window.
+        title = f"{env.name} / pip-audit"
+        if sys.platform == "win32":
+            comspec = os.environ.get("COMSPEC", "cmd.exe")
+            inner = subprocess.list2cmdline(argv)
+            argv = [comspec, "/k", f"title {title} && {inner}"]
+
+        try:
+            launch(argv, cwd, env_overrides=env_overrides)
+        except OSError as e:
+            messagebox.showerror("Launch failed", str(e), parent=self)
+            return
+
+        # We don't close the launcher — the user may want to keep clicking
+        # around while pip-audit runs. Schedule a marker poll to pick up the
+        # result quickly once the wrapper finishes.
+        if not getattr(self, "_polling_started", False):
+            self._polling_started = True
+            self.after(2000, self._poll_markers_then_refresh)
+
+    def _poll_markers_then_refresh(self) -> None:
+        """Check markers; if any new ones, refresh env colours/status."""
+        if self._ingest_audit_markers():
+            # Re-colour and refresh status for the currently selected env.
+            for i, env in enumerate(self._envs):
+                state = self.settings.audit_state(env.name)
+                colour = self._AUDIT_COLOURS.get(state)
+                if colour:
+                    self.env_list.itemconfig(i, foreground=colour)
+            cur = self._current_env()
+            if cur:
+                self._update_audit_status(cur)
+        # Keep polling every few seconds while the launcher is open. pip-audit
+        # itself takes time but the user might fix vulns and re-run later.
+        self.after(5000, self._poll_markers_then_refresh)
+
+    def _ingest_audit_markers(self) -> bool:
+        """Read and delete any audit marker files. Return True if any were found."""
+        markers = self._markers_dir
+        if not markers.is_dir():
+            return False
+        found = False
+        for f in markers.glob("*.json"):
+            try:
+                with f.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                env_name = data.get("env_name")
+                ts = data.get("timestamp")
+                status = data.get("status")
+                if env_name and ts and status in ("clean", "vulnerable"):
+                    self.settings.set_audit(env_name, status, ts)
+                    found = True
+            except (OSError, json.JSONDecodeError):
+                # Skip unreadable / corrupt markers.
+                pass
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        if found:
+            self.settings.save()
+        return found
 
 
 def main() -> None:

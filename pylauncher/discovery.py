@@ -148,3 +148,8 @@ def app_command(env: Environment, app_display_name: str) -> list[str]:
     }
     module = module_map.get(app_display_name, exe_base)
     return [py, "-m", module]
+
+
+def has_pip_audit(env: Environment) -> bool:
+    """Return True if pip-audit appears to be installed in this env."""
+    return (env.bin_dir / f"pip-audit{EXE_SUFFIX}").is_file()
