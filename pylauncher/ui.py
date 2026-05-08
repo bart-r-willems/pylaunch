@@ -170,8 +170,15 @@ class App(tk.Tk):
         self.settings = Settings()
         self._envs: list[Environment] = []
 
-        # Use the platform's native ttk theme (no "clam" override) so that
-        # ttk widgets and tk widgets blend together visually.
+        # ttk.Treeview on the Windows native theme draws a sunken 3D border
+        # of its own. Flatten it so only our wrapper's 1px black border shows.
+        style = ttk.Style(self)
+        style.configure("Flat.Treeview", borderwidth=0, relief="flat")
+        style.layout(
+            "Flat.Treeview",
+            [("Treeview.treearea", {"sticky": "nswe"})],
+        )
+
         self._set_window_icon()
 
         self._build()
@@ -209,12 +216,17 @@ class App(tk.Tk):
             row=0, column=3, padx=(PADDING, 0)
         )
 
-        # Three lists.
-        self.env_list = self._make_list("Environment", column=0)
+        # Decode dot PNGs into PhotoImages once. Must happen after Tk root
+        # exists (i.e. inside _build / __init__), not at class scope.
+        self._build_dot_images()
+
+        # Env uses a Treeview (so we can show coloured status dots);
+        # directory and app stay as plain Listboxes.
+        self.env_list = self._make_env_tree(column=0)
         self.dir_list = self._make_list("Directory", column=1)
         self.app_list = self._make_list("App", column=2)
 
-        self.env_list.bind("<<ListboxSelect>>", lambda _e: self._on_env_select())
+        self.env_list.bind("<<TreeviewSelect>>", lambda _e: self._on_env_select())
         self.dir_list.bind("<<ListboxSelect>>", lambda _e: self._save_last())
         self.app_list.bind("<<ListboxSelect>>", lambda _e: self._save_last())
         self.env_list.bind("<Double-Button-1>", lambda _e: self._launch())
@@ -289,6 +301,65 @@ class App(tk.Tk):
         sb.grid(row=1, column=1, sticky="ns")
         return lb
 
+    def _build_dot_images(self) -> None:
+        """Decode the base64 dot PNGs into PhotoImages, keyed by audit state."""
+        import base64
+        self._dot_images: dict[str, tk.PhotoImage] = {}
+        for state, b64 in self._DOT_PNGS.items():
+            self._dot_images[state] = tk.PhotoImage(data=base64.b64decode(b64))
+
+    def _make_env_tree(self, column: int) -> ttk.Treeview:
+        """Build the environment Treeview: status dot column + name column.
+
+        Styled to match the listboxes: same heading label, no frame border,
+        flat 1px black outline. Single-selection, no header row, no row
+        striping or other visual chrome.
+        """
+        frame = ttk.Frame(self, padding=PADDING)
+        frame.grid(row=1, column=column, sticky="nsew", padx=PADDING, pady=PADDING)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        ttk.Label(frame, text="Environment").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 2)
+        )
+
+        # Container with a 1px black border identical to the listboxes'
+        # border (they use highlightthickness=1 + highlightbackground=black;
+        # we apply the same trick to a frame around the Treeview, since
+        # ttk.Treeview itself doesn't accept those options).
+        border = tk.Frame(
+            frame,
+            highlightthickness=1,
+            highlightbackground="black",
+            highlightcolor="black",
+            bd=0,
+        )
+        border.grid(row=1, column=0, sticky="nsew")
+        border.columnconfigure(0, weight=1)
+        border.rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(
+            border,
+            show="tree",        # no headings row
+            columns=(),         # only the implicit #0 column, which holds icon+text
+            selectmode="browse",
+            takefocus=True,
+            style="Flat.Treeview",
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        # Attach an image for each state-tag, so rows tagged "clean" show the
+        # green dot etc. The text colour stays the theme default (neutral).
+        for state, img in self._dot_images.items():
+            tree.tag_configure(state, image=img)
+
+        sb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.grid(row=1, column=1, sticky="ns")
+
+        return tree
+
     # ----- Window icon -----
 
     def _set_window_icon(self) -> None:
@@ -350,12 +421,14 @@ class App(tk.Tk):
         self.settings.save()
         self.refresh_environments()
 
-    # Map audit state to a foreground colour for the env list.
-    _AUDIT_COLOURS = {
-        "clean":      "#197a2b",   # green
-        "vulnerable": "#b8860b",   # dark orange / amber
-        "overdue":    "#c0392b",   # red
-        "never":      "#c0392b",   # red — never audited counts as overdue
+    # Base64 PNGs of 14×14 coloured dots, one per audit state. Decoded into
+    # PhotoImage objects in _build_dot_images() and attached to Treeview rows
+    # via tags. Generated by a tiny stdlib script (no Pillow dependency).
+    _DOT_PNGS = {
+        "clean":      "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAVUlEQVR42mOQrNJmIAdjEywB4tNA/BOKT0PFcGpUgir6jwOfhqrB0IhPE7JmFI0lRGiC4RJkjadJ0HgaWeNPEjT+pIpGsp1KduCQHR0UJQCykxxJGABnZQHQD5NaSAAAAABJRU5ErkJggg==",
+        "vulnerable": "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAVUlEQVR42mPY0cbNQA7GJlgCxKeB+CcUn4aK4dSoBFX0Hwc+DVWDoRGfJmTNKBpLiNAEwyXIGk+ToPE0ssafJGj8SRWNZDuV7MAhOzooSgBkJzmSMAAW9Gw8vahbVAAAAABJRU5ErkJggg==",
+        "overdue":    "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAVUlEQVR42mM4YKnNQA7GJlgCxKeB+CcUn4aK4dSoBFX0Hwc+DVWDoRGfJmTNKBpLiNAEwyXIGk+ToPE0ssafJGj8SRWNZDuV7MAhOzooSgBkJzmSMADM20/oMWkFeAAAAABJRU5ErkJggg==",
+        "never":      "iVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAAAVUlEQVR42mPo6OhgIAdjEywB4tNA/BOKT0PFcGpUgir6jwOfhqrB0IhPE7JmFI0lRGiC4RJkjadJ0HgaWeNPEjT+pIpGsp1KduCQHR0UJQCykxxJGAD7dai4SYF7TAAAAABJRU5ErkJggg==",
     }
 
     def refresh_environments(self) -> None:
@@ -367,20 +440,28 @@ class App(tk.Tk):
         self.settings.set("env_root", root)
         self.settings.save()
         self._envs = discover_environments(root)
-        self.env_list.delete(0, "end")
-        for i, env in enumerate(self._envs):
-            self.env_list.insert("end", env.name)
+
+        # Clear Treeview rows. Using the env name as iid lets us select by
+        # name later without juggling indices.
+        for iid in self.env_list.get_children():
+            self.env_list.delete(iid)
+        for env in self._envs:
             state = self.settings.audit_state(env.name)
-            colour = self._AUDIT_COLOURS.get(state)
-            if colour:
-                self.env_list.itemconfig(i, foreground=colour)
+            self.env_list.insert(
+                "", "end",
+                iid=env.name,
+                text=f"  {env.name}",   # 2-space lead so the dot doesn't crowd the text
+                tags=(state,),
+            )
 
         last_env = self.settings.get("last_env", "")
-        idx = next((i for i, e in enumerate(self._envs) if e.name == last_env), 0)
-        if self._envs:
-            self.env_list.selection_clear(0, "end")
-            self.env_list.selection_set(idx)
-            self.env_list.see(idx)
+        target = last_env if last_env in (e.name for e in self._envs) else (
+            self._envs[0].name if self._envs else None
+        )
+        if target:
+            self.env_list.selection_set(target)
+            self.env_list.focus(target)
+            self.env_list.see(target)
 
         self.refresh_directories()
         self._on_env_select()
@@ -469,10 +550,12 @@ class App(tk.Tk):
     # ----- Selection helpers -----
 
     def _current_env(self) -> Environment | None:
-        sel = self.env_list.curselection()
+        sel = self.env_list.selection()
         if not sel:
             return None
-        return self._envs[sel[0]]
+        # iid is the env name (set in refresh_environments).
+        name = sel[0]
+        return next((e for e in self._envs if e.name == name), None)
 
     def _current_dir(self) -> dict | None:
         sel = self.dir_list.curselection()
@@ -652,14 +735,14 @@ class App(tk.Tk):
             self.after(2000, self._poll_markers_then_refresh)
 
     def _poll_markers_then_refresh(self) -> None:
-        """Check markers; if any new ones, refresh env colours/status."""
+        """Check markers; if any new ones, refresh env dots/status."""
         if self._ingest_audit_markers():
-            # Re-colour and refresh status for the currently selected env.
-            for i, env in enumerate(self._envs):
+            # Re-tag rows so the dot updates. Treeview redraws automatically
+            # when an item's tags change.
+            for env in self._envs:
                 state = self.settings.audit_state(env.name)
-                colour = self._AUDIT_COLOURS.get(state)
-                if colour:
-                    self.env_list.itemconfig(i, foreground=colour)
+                if self.env_list.exists(env.name):
+                    self.env_list.item(env.name, tags=(state,))
             cur = self._current_env()
             if cur:
                 self._update_audit_status(cur)
