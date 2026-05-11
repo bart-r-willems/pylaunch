@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .settings import Settings, CONFIG_DIR
 from .discovery import discover_environments, available_apps, app_command, has_pip_audit, Environment
-from .launcher import launch
+from .launcher import launch, _normalize_cwd
 
 
 PADDING = 6
@@ -603,7 +603,10 @@ class App(tk.Tk):
             messagebox.showwarning("Pick an app", "Select an app to launch.", parent=self)
             return
 
-        argv = app_command(env, app)
+        # Normalize cwd up front so Jupyter etc. receive a properly-formed
+        # drive-root path (R:\ rather than R:) when we pass it as a flag.
+        cwd = _normalize_cwd(d["path"])
+        argv = app_command(env, app, cwd=cwd)
 
         # For Command Prompt, "activate" the venv by prepending Scripts to
         # PATH and setting VIRTUAL_ENV. This is exactly what activate.bat
@@ -626,7 +629,7 @@ class App(tk.Tk):
         # calls SetConsoleTitle early on and would clobber STARTUPINFO.lpTitle.
         # `title` is a cmd builtin that runs *after* the child, so it wins.
         # IDLE is a Tk GUI app with no console, so it's skipped.
-        title = f"{env.name} / {app}"
+        title = f"{env.name}: {app}"
         console_title: str | None = None
         if sys.platform == "win32" and app != "IDLE":
             comspec = os.environ.get("COMSPEC", "cmd.exe")
@@ -641,7 +644,7 @@ class App(tk.Tk):
         try:
             launch(
                 argv,
-                d["path"],
+                cwd,
                 env_overrides=env_overrides,
                 console_title=console_title,
             )
@@ -715,7 +718,7 @@ class App(tk.Tk):
         )
 
         # Title the console window.
-        title = f"{env.name} / pip-audit"
+        title = f"{env.name}: pip-audit"
         if sys.platform == "win32":
             comspec = os.environ.get("COMSPEC", "cmd.exe")
             inner = subprocess.list2cmdline(argv)

@@ -115,10 +115,20 @@ def available_apps(env: Environment) -> list[str]:
     return found
 
 
-def app_command(env: Environment, app_display_name: str) -> list[str]:
+def app_command(
+    env: Environment,
+    app_display_name: str,
+    cwd: str | None = None,
+) -> list[str]:
     """Build the command line to launch the given app in the given env.
 
     Returns the argv list ready for subprocess.Popen.
+
+    cwd, if given, is used by Jupyter apps to set --ServerApp.root_dir
+    explicitly. Some apps (notably Jupyter) re-normalize the cwd they
+    receive, which strips the trailing backslash from Windows drive-root
+    paths like "R:\\" and breaks them. Passing the path explicitly via
+    a flag bypasses that re-normalization.
     """
     py = str(env.python_exe)
     if app_display_name == "Python (REPL)":
@@ -137,17 +147,35 @@ def app_command(env: Environment, app_display_name: str) -> list[str]:
     exe_base = KNOWN_APPS[app_display_name]
     exe_path = env.bin_dir / f"{exe_base}{EXE_SUFFIX}"
     if exe_path.is_file():
-        return [str(exe_path)]
-    # Fallback: run as module via the env's python.
-    module_map = {
-        "Jupyter Lab": "jupyterlab",
-        "Jupyter Notebook": "notebook",
-        "Qt Console": "qtconsole",
-        "Marimo": "marimo",
-        "IPython": "IPython",
-    }
-    module = module_map.get(app_display_name, exe_base)
-    return [py, "-m", module]
+        argv = [str(exe_path)]
+    else:
+        # Fallback: run as module via the env's python.
+        module_map = {
+            "Jupyter Lab": "jupyterlab",
+            "Jupyter Notebook": "notebook",
+            "Qt Console": "qtconsole",
+            "Marimo": "marimo",
+            "IPython": "IPython",
+        }
+        module = module_map.get(app_display_name, exe_base)
+        argv = [py, "-m", module]
+
+    # Jupyter apps need the working directory passed explicitly because
+    # they re-normalize cwd internally and break drive-root paths like R:\.
+    # Use forward slashes to dodge a Windows cmd quoting issue: when this
+    # argv ends up inside `cmd /k "... --ServerApp.root_dir=R:\"`, the
+    # trailing backslash escapes the closing quote and Jupyter receives
+    # an empty string. Forward slashes work fine on Windows for Jupyter
+    # and avoid the quoting collision entirely.
+    if cwd and app_display_name in ("Jupyter Lab", "Jupyter Notebook"):
+        safe_cwd = cwd.replace("\\", "/")
+        # Drive-root edge case: "R:/" → "R:" after Path normalization, so
+        # ensure a trailing slash is present.
+        if len(safe_cwd) == 2 and safe_cwd[1] == ":":
+            safe_cwd += "/"
+        argv.append(f"--ServerApp.root_dir={safe_cwd}")
+
+    return argv
 
 
 def has_pip_audit(env: Environment) -> bool:

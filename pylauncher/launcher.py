@@ -2,9 +2,30 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+# Matches a Windows drive-letter-only path: "R:" or "R:\". Used to ensure we
+# pass "R:\" (with trailing backslash) to subprocess and child apps — without
+# it, Windows interprets "R:" as "current dir on drive R" rather than "root
+# of drive R", and tools like Jupyter Lab fail with "directory not found".
+_DRIVE_ROOT_RE = re.compile(r"^[A-Za-z]:[\\/]?$")
+
+
+def _normalize_cwd(cwd: str | Path) -> str:
+    """Return cwd as a string, fixing Windows drive-root paths.
+
+    pathlib and os.path routinely strip trailing separators, turning "R:\\"
+    into "R:". This re-adds the trailing backslash for drive-root paths on
+    Windows so subprocess / spawned apps see a real directory.
+    """
+    s = str(cwd)
+    if sys.platform == "win32" and _DRIVE_ROOT_RE.match(s):
+        return s[:2] + "\\"
+    return s
 
 
 def launch(
@@ -26,7 +47,7 @@ def launch(
     their own console (cmd.exe, IPython, Jupyter) will overwrite this
     after startup; for those we wrap the invocation with `cmd /k title …`.
     """
-    cwd_str = str(cwd)
+    cwd_str = _normalize_cwd(cwd)
     kwargs: dict = {"cwd": cwd_str, "close_fds": True}
 
     if env_overrides:
